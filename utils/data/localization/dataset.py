@@ -1,11 +1,15 @@
 from PIL import Image
 from torch.utils.data import Dataset
-
-from .utils import check_files
-from utils.data.utils import load_data
+from pathlib import Path
+from os.path import join
+from torchvision import transforms
+import csv
 
 class PhotoDataset(Dataset):
     def __init__(self, data_path, files, transform, preload=False, resize=None, with_mask=False):
+        from .utils import check_files
+        from utils.data.utils import load_data
+
         self.transform = transform
         self.resize = resize
         self.with_mask = with_mask
@@ -56,3 +60,82 @@ class PhotoDataset(Dataset):
             return image, mask, label
 
         return image, label
+
+
+def get_files(dir_path, ext):
+    return [str(path.name) for path in Path(dir_path).rglob('*.{}'.format(ext))]
+
+
+def get_paths(dir_path, ext):
+    return [str(path) for path in Path(dir_path).rglob('*.{}'.format(ext))]
+
+def csv_reader(fname):
+    with open(fname, 'r') as f:
+        out = list(csv.reader(f))
+    return out
+
+class CamsDataset(Dataset):
+
+    def __init__(self, data_dir):
+
+        file_paths = get_paths(data_dir, 'bmp')
+        file_names = get_files(data_dir, 'bmp')
+
+        img_file_paths = list(filter(lambda f: 'anno' not in f, file_paths))
+        img_file_names = list(filter(lambda f: 'anno' not in f, file_names))
+
+        csv = csv_reader(get_paths(data_dir, 'csv')[0])
+
+        self.img_file_names = img_file_names
+        self.images = self.load_images(img_file_paths)
+        self.labels = [self.get_label(f, csv) for f in img_file_names]
+        self.masks = self.get_masks(img_file_paths)
+        self.transform = transforms.ToTensor()
+
+    def __len__(self):
+        return len(self.images)
+
+    def __getitem__(self, index):
+        image = self.images[index]
+        mask = self.masks[index]
+        label = self.labels[index]
+        name = self.img_file_names[index]
+
+        image = self.transform(image)
+        mask = self.transform(mask)
+        name = name.replace('.bmp', '')
+
+        return image, mask, label, name
+
+    @staticmethod
+    def load_images(file_paths):
+        images = []
+        for f in file_paths:
+            images.append(Image.open(f))
+
+        return images
+
+    @staticmethod
+    def get_label(file, csv):
+        name = file.replace('.bmp', '')
+        lbl = None
+        for line in csv:
+            if line[0] == name:
+                lbl = line[2].strip()
+                break
+        return 0 if lbl == 'benign' else 1
+
+    @staticmethod
+    def get_masks(img_files):
+        masks = []
+        for f in img_files:
+            mask_file = f.replace('.bmp', '_anno.bmp')
+            masks.append(Image.open(mask_file))
+        return masks
+
+if __name__ == "__main__":
+    ds = CamsDataset('/home/victor/PycharmProjects/survey_wsl_histology/data/GlaS/')
+
+    for i in range(ds.__len__()):
+        image, mask, label, file_name = ds.__getitem__(i)
+        print(file_name)

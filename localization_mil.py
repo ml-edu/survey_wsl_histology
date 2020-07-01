@@ -3,15 +3,18 @@ import os
 import time
 import torch
 import torch.nn.functional as F
+import shutil
 
+from os.path import join
 from copy import deepcopy
 from torch.optim import SGD, lr_scheduler
 from torch.backends import cudnn
 from tqdm import tqdm
 from sacred import SETTINGS
+import matplotlib.pyplot as plt
 
 from utils import state_dict_to_cpu, AverageMeter
-from utils.data.localization.dataset_loaders import dataset_ingredient, load_dataset
+from utils.data.localization.dataset_loaders import dataset_ingredient, load_dataset, glas_cams_loader
 from utils.metrics import Evaluator, metric_report
 from mil.models import model_ingredient, load_model
 
@@ -159,6 +162,110 @@ def test(model, loader, device):
     return metrics
 
 
+def save_cams(model, loader, device):
+
+    # Verify directories
+    cams_dir = 'cams/{}/'.format(ex.current_run.config['model']['pooling'])
+    fig_dir = cams_dir + 'figs/'
+    npy_dir = cams_dir + 'npy/'
+    if not os.path.isdir(cams_dir):
+        os.mkdir(cams_dir)
+        os.mkdir(fig_dir)
+        os.mkdir(npy_dir)
+    else:
+        shutil.rmtree(cams_dir)
+        os.mkdir(cams_dir)
+        os.mkdir(fig_dir)
+        os.mkdir(npy_dir)
+
+    model.eval()
+    all_labels = []
+    all_logits = []
+    all_predictions = []
+    all_losses = []
+    all_seg_preds_interp = []
+    all_dices = []
+    all_ious = []
+    evaluator = Evaluator(ex.current_run.config['model']['num_classes'])
+    image_evaluator = Evaluator(ex.current_run.config['model']['num_classes'])
+
+    pbar = tqdm(loader, ncols=80, desc='Save cams')
+
+    with torch.no_grad():
+        for image, segmentation, label, name in pbar:
+            image = image.to(device)
+
+            logits = model(image).cpu()
+            pred = model.pooling.predictions(logits=logits).item()
+            loss = model.pooling.loss(logits=logits, labels=label)
+
+            if ex.current_run.config['dataset']['name'] == 'caltech_birds':
+                segmentation_classes = (segmentation.squeeze() > 0.5)
+            else:
+                segmentation_classes = (segmentation.squeeze() != 0)
+            seg_logits = model.pooling.cam
+            seg_logits_interp = F.interpolate(seg_logits, size=segmentation_classes.shape,
+                                              mode='bilinear', align_corners=True).squeeze(0)
+
+            label = label.item()
+            all_labels.append(label)
+            all_logits.append(logits)
+            all_predictions.append(pred)
+            all_losses.append(loss.item())
+
+            if ex.current_run.config['dataset']['name'] == 'glas':
+                if ex.current_run.config['model']['pooling'] == 'deepmil_multi':
+                    seg_preds_interp = (seg_logits_interp[label] > (1 / seg_logits.numel())).cpu()
+                else:
+                    seg_preds_interp = (seg_logits_interp.argmax(0) == label).cpu()
+
+            else:
+                if ex.current_run.config['model']['pooling'] == 'deepmil':
+                    seg_preds_interp = (seg_logits_interp.squeeze(0) > (1 / seg_logits.numel())).cpu()
+                elif ex.current_run.config['model']['pooling'] == 'deepmil_multi':
+                    seg_preds_interp = (seg_logits_interp[label] > (1 / seg_logits.numel())).cpu()
+                else:
+                    seg_preds_interp = seg_logits_interp.argmax(0).cpu()
+
+            img_seg_pred = seg_preds_interp.numpy()
+            fig = plt.figure()
+            plt.imshow(img_seg_pred)
+            plt.savefig(join(fig_dir, '{}.png'.format(name[0])))
+            plt.close(fig)
+
+            np.save(join(npy_dir, name[0]), img_seg_pred)
+
+            # all_seg_probs_interp.append(seg_probs_interp.numpy())
+            all_seg_preds_interp.append(seg_preds_interp.numpy().astype('bool'))
+
+            evaluator.add_batch(segmentation_classes, seg_preds_interp)
+            image_evaluator.add_batch(segmentation_classes, seg_preds_interp)
+            all_dices.append(image_evaluator.dice()[1].item())
+            all_ious.append(image_evaluator.intersection_over_union()[1].item())
+            image_evaluator.reset()
+
+        all_logits = torch.cat(all_logits, 0)
+        all_probabilities = model.pooling.probabilities(all_logits)
+
+    metrics = metric_report(np.array(all_labels), all_probabilities.numpy(), np.array(all_predictions))
+    metrics['labels'] = np.array(all_labels)
+    metrics['logits'] = all_logits.numpy()
+    metrics['probabilities'] = all_probabilities.numpy()
+    metrics['predictions'] = np.array(all_predictions)
+    metrics['losses'] = np.array(all_losses)
+
+    metrics['dice_per_image'] = np.array(all_dices)
+    metrics['mean_dice'] = metrics['dice_per_image'].mean()
+    metrics['dice'] = evaluator.dice()[1].item()
+    metrics['iou_per_image'] = np.array(all_ious)
+    metrics['mean_iou'] = metrics['iou_per_image'].mean()
+    metrics['iou'] = evaluator.intersection_over_union()[1].item()
+
+    if ex.current_run.config['dataset']['split'] == 0 and ex.current_run.config['dataset']['fold'] == 0:
+        metrics['seg_preds'] = all_seg_preds_interp
+
+    return metrics
+
 @ex.capture
 def get_save_name(save_dir, dataset, model):
     exp_name = ex.get_experiment_info()['name']
@@ -243,13 +350,16 @@ def main(epochs, seed):
     # evaluate on test set
     test_metrics = test(model=model, loader=test_loader, device=device)
 
+    cams_dl = glas_cams_loader()
+    save_cams(model=model, loader=cams_dl, device=device)
+
     ex.log_scalar('test.loss', test_metrics['losses'].mean(), epochs)
     ex.log_scalar('test.acc', test_metrics['accuracy'], epochs)
 
     # save model
-    save_name = get_save_name() + '.pickle'
-    torch.save(state_dict_to_cpu(best_model_dict), save_name)
-    ex.add_artifact(os.path.abspath(save_name))
+    # save_name = get_save_name() + '.pickle'
+    # torch.save(state_dict_to_cpu(best_model_dict), save_name)
+    # ex.add_artifact(os.path.abspath(save_name))
 
     # save test metrics
     if len(ex.current_run.observers) > 0:

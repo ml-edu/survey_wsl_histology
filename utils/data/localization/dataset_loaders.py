@@ -85,6 +85,13 @@ def load_glas(folds_dir, split, fold, data_path, preload, patch_size, batch_size
     )
     return train_loader, valid_loader, test_loader
 
+def glas_cams_loader():
+    from .dataset import CamsDataset
+    return DataLoader(
+        CamsDataset(data_dir='/home/victor/PycharmProjects/survey_wsl_histology/data/GlaS'),
+        batch_size=1,
+        shuffle=False
+    )
 
 @dataset_ingredient.capture
 def load_camelyon16(folds_dir, size, split, fold, data_path, preload, batch_size, shuffle,

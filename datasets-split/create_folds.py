@@ -778,13 +778,7 @@ def do_glas():
 
     # ===========================
 
-    username = getpass.getuser()
-    if username == "brian":
-        baseurl = "/media/brian/Seagate Backup Plus Drive/datasets/GlaS-2015/Warwick QU Dataset (Released 2016_07_08)"
-    elif username == "sbelharb":
-        baseurl = "/project/6004986/sbelharb/workspace/datasets/GlaS-2015/Warwick QU Dataset (Released 2016_07_08)"
-    else:
-        raise ValueError("username `{}` unknown .... [NOT OK]".format(username))
+    baseurl = '/home/victor/PycharmProjects/survey_wsl_histology/data/GlaS'
 
     args = {"baseurl": baseurl,
             "folding": {"vl": 20},  # 80 % for train, 20% for validation.
@@ -834,13 +828,13 @@ def do_camelyon16_WSI_level():
 
 if __name__ == "__main__":
     # ============== CREATE FOLDS OF BACH (PART A) 2018 DATASET
-    do_bach_parta_2018()
+    # do_bach_parta_2018()
 
     # ============== CREATE FOLDS OF GlaS DATASET
     do_glas()
 
     # ============== CREATE FOLDS OF CAMELYON16 DATASET (WSI-LEVEL)
-    do_camelyon16_WSI_level()
+    # do_camelyon16_WSI_level()
 
     # ============== CREATE FOLDS OF BreakHis DATASET
-    do_breakhis()
+    # do_breakhis()
