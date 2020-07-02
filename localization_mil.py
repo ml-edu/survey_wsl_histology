@@ -54,7 +54,13 @@ def validation(model, loader, device):
     all_losses = []
 
     pbar = tqdm(loader, ncols=80, desc='Validation')
-    with torch.no_grad():
+
+    if ex.current_run.config['model']['pooling'] == 'gradcampp':
+        grad_policy = torch.set_grad_enabled(True)
+    else:
+        grad_policy = torch.no_grad()
+
+    with grad_policy:
         for image, label in pbar:
             image = image.to(device)
 
@@ -69,12 +75,12 @@ def validation(model, loader, device):
             all_losses.append(loss.item())
 
         all_probabilities = torch.cat(all_probabilities, 0)
+        all_probabilities = all_probabilities.detach()
 
     metrics = metric_report(np.array(all_labels), all_probabilities.numpy(), np.array(all_predictions))
     metrics['losses'] = np.array(all_losses)
 
     return metrics
-
 
 def test(model, loader, device):
     model.eval()
@@ -90,7 +96,16 @@ def test(model, loader, device):
 
     pbar = tqdm(loader, ncols=80, desc='Test')
 
-    with torch.no_grad():
+
+    if ex.current_run.config['model']['pooling'] == 'gradcampp':
+        grad_policy = torch.set_grad_enabled(True)
+        back_prop = True
+        # grad_policy = torch.no_grad()
+    else:
+        grad_policy = torch.no_grad()
+        back_prop = False
+
+    with grad_policy:
         for image, segmentation, label in pbar:
             image = image.to(device)
 
@@ -98,10 +113,19 @@ def test(model, loader, device):
             pred = model.pooling.predictions(logits=logits).item()
             loss = model.pooling.loss(logits=logits, labels=label)
 
+            # if back_prop:
+            #     loss.backward()
+
+            # if ex.current_run.config['model']['pooling'] == 'gradcampp':
+            #     model.compute_gradcampp()
+
             if ex.current_run.config['dataset']['name'] == 'caltech_birds':
                 segmentation_classes = (segmentation.squeeze() > 0.5)
             else:
                 segmentation_classes = (segmentation.squeeze() != 0)
+
+            seg_shape = segmentation_classes.shape
+
             seg_logits = model.pooling.cam
             seg_logits_interp = F.interpolate(seg_logits, size=segmentation_classes.shape,
                                               mode='bilinear', align_corners=True).squeeze(0)
@@ -136,6 +160,7 @@ def test(model, loader, device):
             image_evaluator.reset()
 
         all_logits = torch.cat(all_logits, 0)
+        all_logits = all_logits.detach()
         all_probabilities = model.pooling.probabilities(all_logits)
 
     metrics = metric_report(np.array(all_labels), all_probabilities.numpy(), np.array(all_predictions))
@@ -175,6 +200,7 @@ def main(epochs, seed):
 
     train_loader, valid_loader, test_loader = load_dataset()
     model = load_model()
+    print(model)
     model = torch.nn.DataParallel(model)
     model.to(device)
     optimizer, scheduler = get_optimizer_scheduler(parameters=model.parameters())
@@ -247,9 +273,9 @@ def main(epochs, seed):
     ex.log_scalar('test.acc', test_metrics['accuracy'], epochs)
 
     # save model
-    save_name = get_save_name() + '.pickle'
-    torch.save(state_dict_to_cpu(best_model_dict), save_name)
-    ex.add_artifact(os.path.abspath(save_name))
+    # save_name = get_save_name() + '.pickle'
+    # torch.save(state_dict_to_cpu(best_model_dict), save_name)
+    # ex.add_artifact(os.path.abspath(save_name))
 
     # save test metrics
     if len(ex.current_run.observers) > 0:

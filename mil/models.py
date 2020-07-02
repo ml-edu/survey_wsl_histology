@@ -1,6 +1,7 @@
 import torch.nn as nn
 from collections import OrderedDict
 from sacred import Ingredient
+from mil.poolings import GradCAM
 
 import cnn
 from .configs import poolings
@@ -53,6 +54,9 @@ def deepmil_multi():
     mid_channels = 128
     gated = False
 
+@model_ingredient.named_config
+def gradcampp():
+    pooling = 'gradcampp'
 
 @model_ingredient.capture
 def load_backbone(arch, pretrained):
@@ -106,6 +110,11 @@ def load_deepmil_multi(pooling, in_channels, mid_channels, num_classes, gated):
 
     return pooling_module
 
+@model_ingredient.capture
+def load_gradcam_pp(pooling, in_channels, num_classes):
+    pooling_module = poolings[pooling](in_channels, num_classes)
+
+    return pooling_module
 
 _pooling_loaders = {
     'average': load_average,
@@ -114,6 +123,7 @@ _pooling_loaders = {
     'wildcat': load_wildcat,
     'deepmil': load_deepmil,
     'deepmil_multi': load_deepmil_multi,
+    'gradcampp': load_gradcam_pp
 }
 
 
@@ -125,11 +135,19 @@ def load_model(pooling):
 
     backbone = load_backbone()
     out_channels = backbone.inplanes
-    pooling = _pooling_loaders[pooling](in_channels=out_channels)
+    pooling_module = _pooling_loaders[pooling](in_channels=out_channels)
 
-    model = nn.Sequential(OrderedDict([
-        ('backbone', backbone),
-        ('pooling', pooling)
-    ]))
+    if pooling == 'gradcampp':
+        model = GradCAM(backbone=backbone, pooling=pooling_module)
+    else:
+        model = nn.Sequential(OrderedDict([
+            ('backbone', backbone),
+            ('pooling', pooling_module)
+        ]))
+
+    # model = nn.Sequential(OrderedDict([
+    #     ('backbone', backbone),
+    #     ('pooling', pooling_module)
+    # ]))
 
     return model

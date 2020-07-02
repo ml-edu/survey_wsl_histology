@@ -1,5 +1,5 @@
 from mil.deepmil import DeepMIL, DeepMILMulti
-from mil.poolings import Average, Max, LogSumExp, Wildcat
+from mil.poolings import Average, Max, LogSumExp, Wildcat, GradCamPP, GAP
 
 poolings = {
     'deepmil': DeepMIL,
@@ -8,4 +8,6 @@ poolings = {
     'max': Max,
     'lse': LogSumExp,
     'wildcat': Wildcat,
+    'gradcampp': GAP
+    # 'gradcampp': GradCamPP
 }
