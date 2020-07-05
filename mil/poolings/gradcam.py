@@ -22,8 +22,6 @@ class GradCAM(nn.Module):
             self.activations['value'] = output
             return None
 
-
-
         last_conv = backbone.layer4
 
         last_conv.register_forward_hook(forward_hook)
@@ -48,6 +46,7 @@ class GradCAM(nn.Module):
 
                 self.backbone.zero_grad()
                 self.pooling.zero_grad()
+                self.zero_grad()
 
                 score.backward(retain_graph=False)
 
@@ -66,10 +65,15 @@ class GradCAM(nn.Module):
 
                 saliency_map = (weights * activations).sum(1, keepdim=True)
                 saliency_map = F.relu(saliency_map)
-
+                # saliency_map_min, saliency_map_max = saliency_map.min(), saliency_map.max()
+                # saliency_map = (saliency_map - saliency_map_min).div(saliency_map_max - saliency_map_min).data
                 class_maps.append(saliency_map)
-                del saliency_map
+
             class_maps = torch.cat(class_maps, 1).cpu()
-            self.pooling.cam = class_maps
+
+            saliency_map_min, saliency_map_max = class_maps.min(), class_maps.max()
+            saliency_map = (class_maps - saliency_map_min).div(saliency_map_max - saliency_map_min).data
+
+            self.pooling.cam = saliency_map
 
         return logits

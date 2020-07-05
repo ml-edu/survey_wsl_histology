@@ -1,3 +1,3 @@
-from .classic import Average, Max, LogSumExp, Classification, GradCamPP, GAP
+from .classic import Average, Max, LogSumExp, Classification, GradCAMPP, GAP
 from .wildcat import Wildcat
 from .gradcam import GradCAM

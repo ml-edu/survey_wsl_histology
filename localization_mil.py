@@ -3,12 +3,16 @@ import os
 import time
 import torch
 import torch.nn.functional as F
+import cv2
 
 from copy import deepcopy
 from torch.optim import SGD, lr_scheduler
 from torch.backends import cudnn
+from torchvision.utils import make_grid, save_image
 from tqdm import tqdm
 from sacred import SETTINGS
+from PIL import Image
+from torchvision import transforms
 
 from utils import state_dict_to_cpu, AverageMeter
 from utils.data.localization.dataset_loaders import dataset_ingredient, load_dataset
@@ -29,13 +33,16 @@ ex.captured_out_filter = apply_backspaces_and_linefeeds
 
 @ex.config
 def default_config():
-    epochs = 30
+    epochs = 160
     lr = 0.01
     momentum = 0.9
     weight_decay = 1e-4
     lr_step = 10
 
+    threshold = 0.25
+
     save_dir = os.path.join('results', 'temp')
+    dataparallel = False
 
 
 @ex.capture
@@ -46,7 +53,7 @@ def get_optimizer_scheduler(parameters, lr, momentum, weight_decay, lr_step):
     return optimizer, scheduler
 
 
-def validation(model, loader, device):
+def validation(model, loader, device, dataparallel):
     model.eval()
     all_labels = []
     all_probabilities = []
@@ -65,9 +72,14 @@ def validation(model, loader, device):
             image = image.to(device)
 
             logits = model(image).cpu()
-            pred = model.module.pooling.predictions(logits=logits)
-            loss = model.module.pooling.loss(logits=logits, labels=label)
-            probs = model.module.pooling.probabilities(logits)
+            if dataparallel:
+                pred = model.module.pooling.predictions(logits=logits)
+                loss = model.module.pooling.loss(logits=logits, labels=label)
+                probs = model.module.pooling.probabilities(logits)
+            else:
+                pred = model.pooling.predictions(logits=logits)
+                loss = model.pooling.loss(logits=logits, labels=label)
+                probs = model.pooling.probabilities(logits)
 
             all_labels.append(label.item())
             all_predictions.append(pred.item())
@@ -82,7 +94,51 @@ def validation(model, loader, device):
 
     return metrics
 
-def test(model, loader, device):
+
+def visualize_cam(mask, img):
+    """Make heatmap from mask and synthesize GradCAM result image using heatmap and img.
+    Args:
+        mask (torch.tensor): mask shape of (1, 1, H, W) and each element has value in range [0, 1]
+        img (torch.tensor): img shape of (1, 3, H, W) and each pixel value is in range [0, 1]
+
+    Return:
+        heatmap (torch.tensor): heatmap img shape of (3, H, W)
+        result (torch.tensor): synthesized GradCAM result of same shape with heatmap.
+    """
+    heatmap = cv2.applyColorMap(np.uint8(255 * mask.squeeze()), cv2.COLORMAP_JET)
+    heatmap = torch.from_numpy(heatmap).permute(2, 0, 1).float().div(255)
+    b, g, r = heatmap.split(1)
+    heatmap = torch.cat([r, g, b])
+
+    result = heatmap + img.cpu()
+    result = result.div(result.max()).squeeze()
+
+    return heatmap, result
+
+from matplotlib import pyplot as plt
+def save_visualization(image, mask, saliency_map, overlay, seg_pred, file_path):
+    fig, (ax1, ax2, ax3, ax4, ax5) = plt.subplots(1, 5, figsize=(20, 10))
+    ax1.imshow(image.permute(1, 2, 0))
+    ax1.set_title('input')
+
+    ax2.imshow(mask)
+    ax2.set_title('gt mask')
+
+    ax3.imshow(saliency_map.permute(1, 2, 0))
+    ax3.set_title('img level class saliency map')
+
+    ax4.imshow(overlay.permute(1, 2, 0))
+    ax4.set_title('saliency overlay')
+
+    ax5.imshow(seg_pred)
+    ax5.set_title('segmentation prediction')
+
+    plt.savefig(file_path)
+    plt.close(fig)
+
+
+
+def test(model, loader, device, threshold=None):
     model.eval()
     all_labels = []
     all_logits = []
@@ -106,18 +162,12 @@ def test(model, loader, device):
         back_prop = False
 
     with grad_policy:
-        for image, segmentation, label in pbar:
+        for i, (image, segmentation, label) in enumerate(pbar):
             image = image.to(device)
 
             logits = model(image).cpu()
             pred = model.pooling.predictions(logits=logits).item()
             loss = model.pooling.loss(logits=logits, labels=label)
-
-            # if back_prop:
-            #     loss.backward()
-
-            # if ex.current_run.config['model']['pooling'] == 'gradcampp':
-            #     model.compute_gradcampp()
 
             if ex.current_run.config['dataset']['name'] == 'caltech_birds':
                 segmentation_classes = (segmentation.squeeze() > 0.5)
@@ -126,7 +176,7 @@ def test(model, loader, device):
 
             seg_shape = segmentation_classes.shape
 
-            seg_logits = model.pooling.cam
+            seg_logits = model.pooling.cam.detach().cpu()
             seg_logits_interp = F.interpolate(seg_logits, size=segmentation_classes.shape,
                                               mode='bilinear', align_corners=True).squeeze(0)
 
@@ -139,6 +189,12 @@ def test(model, loader, device):
             if ex.current_run.config['dataset']['name'] == 'glas':
                 if ex.current_run.config['model']['pooling'] == 'deepmil_multi':
                     seg_preds_interp = (seg_logits_interp[label] > (1 / seg_logits.numel())).cpu()
+                elif ex.current_run.config['model']['pooling'] == 'gradcampp':
+                    # seg_preds_interp = (seg_logits_interp[label] > seg_logits_interp[label].mean()).cpu()
+                    if threshold is not None:
+                        seg_preds_interp = (seg_logits_interp[label] > threshold).cpu()
+                    else:
+                        seg_preds_interp = (seg_logits_interp[label] > 0.25).cpu()
                 else:
                     seg_preds_interp = (seg_logits_interp.argmax(0) == label).cpu()
 
@@ -149,6 +205,13 @@ def test(model, loader, device):
                     seg_preds_interp = (seg_logits_interp[label] > (1 / seg_logits.numel())).cpu()
                 else:
                     seg_preds_interp = seg_logits_interp.argmax(0).cpu()
+
+            # Save heatmap
+            save_dir = 'cams/{}_{}'.format(ex.current_run.config['model']['pooling'], threshold)
+            os.makedirs(save_dir, exist_ok=True)
+            file_path = os.path.join(save_dir, 'cam_{}.png'.format(i))
+            saliency_map, overlay = visualize_cam(seg_logits_interp[label], image)
+            save_visualization(image.squeeze().cpu(), segmentation_classes.numpy(), saliency_map, overlay, seg_preds_interp.numpy(), file_path)
 
             # all_seg_probs_interp.append(seg_probs_interp.numpy())
             all_seg_preds_interp.append(seg_preds_interp.numpy().astype('bool'))
@@ -193,7 +256,10 @@ def get_save_name(save_dir, dataset, model):
 
 
 @ex.automain
-def main(epochs, seed):
+def main(epochs, seed, dataparallel, threshold):
+
+    print('Threshold: {}'.format(threshold))
+
     device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
     cudnn.deterministic = True
     torch.manual_seed(seed)
@@ -201,7 +267,11 @@ def main(epochs, seed):
     train_loader, valid_loader, test_loader = load_dataset()
     model = load_model()
     print(model)
-    model = torch.nn.DataParallel(model)
+
+    if dataparallel:
+        model = torch.nn.DataParallel(model)
+
+
     model.to(device)
     optimizer, scheduler = get_optimizer_scheduler(parameters=model.parameters())
 
@@ -210,7 +280,10 @@ def main(epochs, seed):
 
     best_valid_acc = 0
     best_valid_loss = float('inf')
-    best_model_dict = deepcopy(model.module.state_dict())
+    if dataparallel:
+        best_model_dict = deepcopy(model.module.state_dict())
+    else:
+        best_model_dict = deepcopy(model.state_dict())
 
     for epoch in range(epochs):
         model.train()
@@ -225,8 +298,12 @@ def main(epochs, seed):
             images, labels = images.to(device), labels.to(device, non_blocking=True)
 
             logits = model(images)
-            predictions = model.module.pooling.predictions(logits=logits)
-            loss = model.module.pooling.loss(logits=logits, labels=labels)
+            if dataparallel:
+                predictions = model.module.pooling.predictions(logits=logits)
+                loss = model.module.pooling.loss(logits=logits, labels=labels)
+            else:
+                predictions = model.pooling.predictions(logits=logits)
+                loss = model.pooling.loss(logits=logits, labels=labels)
             optimizer.zero_grad()
             loss.backward()
             optimizer.step()
@@ -245,12 +322,15 @@ def main(epochs, seed):
         duration = end - start
 
         # evaluate on validation set
-        valid_metrics = validation(model=model, loader=valid_loader, device=device)
+        valid_metrics = validation(model=model, loader=valid_loader, device=device, dataparallel=dataparallel)
 
         if valid_metrics['losses'].mean() <= best_valid_loss:
             best_valid_acc = valid_metrics['accuracy']
             best_valid_loss = valid_metrics['losses'].mean()
-            best_model_dict = deepcopy(model.module.state_dict())
+            if dataparallel:
+                best_model_dict = deepcopy(model.module.state_dict())
+            else:
+                best_model_dict = deepcopy(model.state_dict())
 
         ex.log_scalar('validation.loss', valid_metrics['losses'].mean(), epoch + 1)
         ex.log_scalar('validation.acc', valid_metrics['accuracy'], epoch + 1)
@@ -267,7 +347,7 @@ def main(epochs, seed):
     model.to(device)
 
     # evaluate on test set
-    test_metrics = test(model=model, loader=test_loader, device=device)
+    test_metrics = test(model=model, loader=test_loader, device=device, threshold=threshold)
 
     ex.log_scalar('test.loss', test_metrics['losses'].mean(), epochs)
     ex.log_scalar('test.acc', test_metrics['accuracy'], epochs)
