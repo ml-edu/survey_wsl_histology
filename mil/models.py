@@ -1,7 +1,7 @@
 import torch.nn as nn
 from collections import OrderedDict
 from sacred import Ingredient
-from mil.poolings import GradCAM
+from mil.poolings import GradCAM, GradCAMpp
 
 import cnn
 from .configs import poolings
@@ -57,6 +57,10 @@ def deepmil_multi():
 @model_ingredient.named_config
 def gradcampp():
     pooling = 'gradcampp'
+
+@model_ingredient.named_config
+def gradcam():
+    pooling = 'gradcam'
 
 @model_ingredient.capture
 def load_backbone(arch, pretrained):
@@ -116,6 +120,12 @@ def load_gradcam_pp(pooling, in_channels, num_classes):
 
     return pooling_module
 
+@model_ingredient.capture
+def load_gradcam(pooling, in_channels, num_classes):
+    pooling_module = poolings[pooling](in_channels, num_classes)
+
+    return pooling_module
+
 _pooling_loaders = {
     'average': load_average,
     'max': load_max,
@@ -123,6 +133,7 @@ _pooling_loaders = {
     'wildcat': load_wildcat,
     'deepmil': load_deepmil,
     'deepmil_multi': load_deepmil_multi,
+    'gradcam': load_gradcam,
     'gradcampp': load_gradcam_pp
 }
 
@@ -137,17 +148,19 @@ def load_model(pooling):
     out_channels = backbone.inplanes
     pooling_module = _pooling_loaders[pooling](in_channels=out_channels)
 
-    if pooling == 'gradcampp':
-        model = GradCAM(backbone=backbone, pooling=pooling_module)
-    else:
-        model = nn.Sequential(OrderedDict([
-            ('backbone', backbone),
-            ('pooling', pooling_module)
-        ]))
+    # if pooling == 'gradcampp':
+    #     model = GradCAMpp(backbone=backbone, pooling=pooling_module)
+    # # elif pooling == 'gradcam':
+    # #     model = GradCAM(backbone=backbone, pooling=pooling_module)
+    # else:
+    #     model = nn.Sequential(OrderedDict([
+    #         ('backbone', backbone),
+    #         ('pooling', pooling_module)
+    #     ]))
 
-    # model = nn.Sequential(OrderedDict([
-    #     ('backbone', backbone),
-    #     ('pooling', pooling_module)
-    # ]))
+    model = nn.Sequential(OrderedDict([
+        ('backbone', backbone),
+        ('pooling', pooling_module)
+    ]))
 
     return model

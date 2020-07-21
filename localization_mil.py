@@ -13,7 +13,7 @@ from tqdm import tqdm
 from sacred import SETTINGS
 from PIL import Image
 from torchvision import transforms
-
+from matplotlib import pyplot as plt
 from utils import state_dict_to_cpu, AverageMeter
 from utils.data.localization.dataset_loaders import dataset_ingredient, load_dataset
 from utils.metrics import Evaluator, metric_report
@@ -33,17 +33,18 @@ ex.captured_out_filter = apply_backspaces_and_linefeeds
 
 @ex.config
 def default_config():
-    epochs = 160
+    epochs = 30
     lr = 0.01
     momentum = 0.9
     weight_decay = 1e-4
     lr_step = 10
 
-    threshold = 0.25
+    threshold = 0.15
 
     save_dir = os.path.join('results', 'temp')
     dataparallel = False
 
+requires_gradients = ['gradcampp', 'gradcam']
 
 @ex.capture
 def get_optimizer_scheduler(parameters, lr, momentum, weight_decay, lr_step):
@@ -62,12 +63,12 @@ def validation(model, loader, device, dataparallel):
 
     pbar = tqdm(loader, ncols=80, desc='Validation')
 
-    if ex.current_run.config['model']['pooling'] == 'gradcampp':
-        grad_policy = torch.set_grad_enabled(True)
-    else:
-        grad_policy = torch.no_grad()
+    # if ex.current_run.config['model']['pooling'] in requires_gradients:
+    #     grad_policy = torch.set_grad_enabled(True)
+    # else:
+    #     grad_policy = torch.no_grad()
 
-    with grad_policy:
+    with torch.no_grad():
         for image, label in pbar:
             image = image.to(device)
 
@@ -115,17 +116,19 @@ def visualize_cam(mask, img):
 
     return heatmap, result
 
-from matplotlib import pyplot as plt
-def save_visualization(image, mask, saliency_map, overlay, seg_pred, file_path):
-    fig, (ax1, ax2, ax3, ax4, ax5) = plt.subplots(1, 5, figsize=(20, 10))
+def save_visualization(image, mask, saliency_map_0, saliency_map_1, overlay, seg_pred, file_path):
+    fig, (ax1, ax2, ax3, ax33, ax4, ax5) = plt.subplots(1, 6, figsize=(20, 10))
     ax1.imshow(image.permute(1, 2, 0))
     ax1.set_title('input')
 
     ax2.imshow(mask)
     ax2.set_title('gt mask')
 
-    ax3.imshow(saliency_map.permute(1, 2, 0))
+    ax3.imshow(saliency_map_0.permute(1, 2, 0))
     ax3.set_title('img level class saliency map')
+
+    ax33.imshow(saliency_map_1.permute(1, 2, 0))
+    ax33.set_title('img level class saliency map')
 
     ax4.imshow(overlay.permute(1, 2, 0))
     ax4.set_title('saliency overlay')
@@ -152,20 +155,20 @@ def test(model, loader, device, threshold=None):
 
     pbar = tqdm(loader, ncols=80, desc='Test')
 
-
-    if ex.current_run.config['model']['pooling'] == 'gradcampp':
+    if ex.current_run.config['model']['pooling'] in requires_gradients:
         grad_policy = torch.set_grad_enabled(True)
-        back_prop = True
-        # grad_policy = torch.no_grad()
     else:
         grad_policy = torch.no_grad()
-        back_prop = False
 
     with grad_policy:
         for i, (image, segmentation, label) in enumerate(pbar):
             image = image.to(device)
 
+            if ex.current_run.config['model']['pooling'] in requires_gradients:
+                model.pooling.eval_cams = True
+
             logits = model(image).cpu()
+
             pred = model.pooling.predictions(logits=logits).item()
             loss = model.pooling.loss(logits=logits, labels=label)
 
@@ -189,12 +192,11 @@ def test(model, loader, device, threshold=None):
             if ex.current_run.config['dataset']['name'] == 'glas':
                 if ex.current_run.config['model']['pooling'] == 'deepmil_multi':
                     seg_preds_interp = (seg_logits_interp[label] > (1 / seg_logits.numel())).cpu()
-                elif ex.current_run.config['model']['pooling'] == 'gradcampp':
-                    # seg_preds_interp = (seg_logits_interp[label] > seg_logits_interp[label].mean()).cpu()
-                    if threshold is not None:
-                        seg_preds_interp = (seg_logits_interp[label] > threshold).cpu()
-                    else:
-                        seg_preds_interp = (seg_logits_interp[label] > 0.25).cpu()
+                # elif ex.current_run.config['model']['pooling'] == 'gradcampp' or ex.current_run.config['model']['pooling'] == 'gradcam':
+                #     class_map_logits = seg_logits_interp[label]
+                #     class_map_logits_max, class_map_logits_min = class_map_logits.max(), class_map_logits.min()
+                #     class_map_logits = (class_map_logits - class_map_logits_min) / (class_map_logits_max - class_map_logits_min)
+                #     seg_preds_interp = (class_map_logits > threshold).cpu()
                 else:
                     seg_preds_interp = (seg_logits_interp.argmax(0) == label).cpu()
 
@@ -207,11 +209,14 @@ def test(model, loader, device, threshold=None):
                     seg_preds_interp = seg_logits_interp.argmax(0).cpu()
 
             # Save heatmap
-            save_dir = 'cams/{}_{}'.format(ex.current_run.config['model']['pooling'], threshold)
+            save_dir = 'cams/{}'.format(ex.current_run.config['model']['pooling'])
             os.makedirs(save_dir, exist_ok=True)
             file_path = os.path.join(save_dir, 'cam_{}.png'.format(i))
-            saliency_map, overlay = visualize_cam(seg_logits_interp[label], image)
-            save_visualization(image.squeeze().cpu(), segmentation_classes.numpy(), saliency_map, overlay, seg_preds_interp.numpy(), file_path)
+
+            saliency_map_0, overlay = visualize_cam(seg_logits_interp[0] / seg_logits_interp[0].max(), image)
+            saliency_map_1, _ = visualize_cam(seg_logits_interp[1] / seg_logits_interp[1].max(), image)
+
+            save_visualization(image.squeeze().cpu(), segmentation_classes.numpy(), saliency_map_0, saliency_map_1, overlay, seg_preds_interp.numpy() * 255, file_path)
 
             # all_seg_probs_interp.append(seg_probs_interp.numpy())
             all_seg_preds_interp.append(seg_preds_interp.numpy().astype('bool'))
@@ -222,9 +227,15 @@ def test(model, loader, device, threshold=None):
             all_ious.append(image_evaluator.intersection_over_union()[1].item())
             image_evaluator.reset()
 
+        if ex.current_run.config['model']['pooling'] in requires_gradients:
+            model.pooling.eval_cams = False
         all_logits = torch.cat(all_logits, 0)
         all_logits = all_logits.detach()
         all_probabilities = model.pooling.probabilities(all_logits)
+
+    with open('test/gradcampp_seg_preds.pkl', 'wb') as f:
+        import pickle as pkl
+        pkl.dump(all_seg_preds_interp, f)
 
     metrics = metric_report(np.array(all_labels), all_probabilities.numpy(), np.array(all_predictions))
     metrics['images_path'] = loader.dataset.samples
