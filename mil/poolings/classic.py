@@ -21,6 +21,46 @@ class Classification(nn.Module):
     def loss(logits: torch.Tensor, labels: torch.Tensor):
         return F.cross_entropy(logits, labels)
 
+class AblationCam(Classification):
+
+    def __init__(self, in_channels, classes):
+        super(AblationCam, self).__init__(in_channels, classes)
+        self.pool = nn.AdaptiveAvgPool2d(1)
+        self.eval_cams = False
+        self.device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        out = self.conv(x)
+
+        logits = self.pool(out).flatten(1)
+
+        if self.eval_cams:
+            class_maps = []
+            for c in range(self.classes):
+                score = logits[:, c].squeeze()
+
+                cams = out.detach()
+                b, m, h, w = cams.size()
+                weighted_maps = torch.zeros([b, m, h, w])
+                for k in range(m):
+                    abl_cams = cams.detach().clone()
+                    abl_cams[0][k] = 0
+
+                    abl_logits = self.pool(abl_cams).flatten(1)
+                    abl_score = abl_logits[:, c].squeeze()
+                    weight = (score - abl_score) / score
+
+                    w_map = weight * cams[0][k]
+                    weighted_maps[0][k] = w_map
+                saliency_map = F.relu(weighted_maps.sum(1, keepdim=True))
+                class_maps.append(saliency_map)
+
+            class_maps = torch.cat(class_maps, 1).cpu()
+            self.cam = class_maps
+
+
+        return logits
+
 
 class Average(Classification):
     def __init__(self, in_channels, classes):

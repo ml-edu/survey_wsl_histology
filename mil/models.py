@@ -11,7 +11,9 @@ model_ingredient = Ingredient('model')
 
 @model_ingredient.config
 def config():
-    arch = 'resnet18'
+    # arch = 'resnet18'
+    # arch = 'drn_d_22'
+    arch = 'drn_c_26'
     pretrained = True
     num_classes = 2
 
@@ -54,13 +56,19 @@ def deepmil_multi():
     mid_channels = 128
     gated = False
 
+
 @model_ingredient.named_config
 def gradcampp():
     pooling = 'gradcampp'
 
+
 @model_ingredient.named_config
 def gradcam():
     pooling = 'gradcam'
+
+@model_ingredient.named_config
+def ablation():
+    pooling = 'ablation'
 
 @model_ingredient.capture
 def load_backbone(arch, pretrained):
@@ -126,6 +134,12 @@ def load_gradcam(pooling, in_channels, num_classes):
 
     return pooling_module
 
+@model_ingredient.capture
+def load_ablation(pooling, in_channels, num_classes):
+    pooling_module = poolings[pooling](in_channels, num_classes)
+
+    return pooling_module
+
 _pooling_loaders = {
     'average': load_average,
     'max': load_max,
@@ -134,7 +148,8 @@ _pooling_loaders = {
     'deepmil': load_deepmil,
     'deepmil_multi': load_deepmil_multi,
     'gradcam': load_gradcam,
-    'gradcampp': load_gradcam_pp
+    'gradcampp': load_gradcam_pp,
+    'ablation': load_ablation
 }
 
 

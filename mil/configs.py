@@ -1,5 +1,5 @@
 from mil.deepmil import DeepMIL, DeepMILMulti
-from mil.poolings import Average, Max, LogSumExp, Wildcat, GAP, GradCamPooling, GradCamPlusPooling
+from mil.poolings import Average, Max, LogSumExp, Wildcat, GAP, GradCamPooling, GradCamPlusPooling, AblationCam
 
 poolings = {
     'deepmil': DeepMIL,
@@ -11,5 +11,6 @@ poolings = {
     # 'gradcam': GAP,
     'gradcam': GradCamPooling,
     # 'gradcampp': GAP
-    'gradcampp': GradCamPlusPooling
+    'gradcampp': GradCamPlusPooling,
+    'ablation': AblationCam
 }

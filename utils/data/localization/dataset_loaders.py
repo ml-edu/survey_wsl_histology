@@ -29,7 +29,7 @@ def glas():
     data_path = 'data/GlaS'
     name = 'glas'
     folds_dir = 'folds/glas'
-    batch_size = 32
+    batch_size = 24
     patch_size = 416
     sampler_mul = 8
 
