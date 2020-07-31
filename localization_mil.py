@@ -40,8 +40,6 @@ def default_config():
     weight_decay = 1e-4
     lr_step = 80
 
-    threshold = 0.15
-
     save_dir = os.path.join('results', 'temp')
     dataparallel = True
 
@@ -216,11 +214,6 @@ def test(model, loader, device, threshold=None):
             if ex.current_run.config['dataset']['name'] == 'glas':
                 if ex.current_run.config['model']['pooling'] == 'deepmil_multi':
                     seg_preds_interp = (seg_logits_interp[label] > (1 / seg_logits.numel())).cpu()
-                # elif ex.current_run.config['model']['pooling'] == 'gradcampp' or ex.current_run.config['model']['pooling'] == 'gradcam':
-                #     class_map_logits = seg_logits_interp[label]
-                #     class_map_logits_max, class_map_logits_min = class_map_logits.max(), class_map_logits.min()
-                #     class_map_logits = (class_map_logits - class_map_logits_min) / (class_map_logits_max - class_map_logits_min)
-                #     seg_preds_interp = (class_map_logits > threshold).cpu()
                 else:
                     seg_preds_interp = (seg_logits_interp.argmax(0) == label).cpu()
 

@@ -11,9 +11,7 @@ model_ingredient = Ingredient('model')
 
 @model_ingredient.config
 def config():
-    # arch = 'resnet18'
-    # arch = 'drn_d_22'
-    arch = 'drn_c_26'
+    arch = 'resnet18'
     pretrained = True
     num_classes = 2
 

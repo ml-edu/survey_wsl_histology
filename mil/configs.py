@@ -8,9 +8,7 @@ poolings = {
     'max': Max,
     'lse': LogSumExp,
     'wildcat': Wildcat,
-    # 'gradcam': GAP,
     'gradcam': GradCamPooling,
-    # 'gradcampp': GAP
     'gradcampp': GradCamPlusPooling,
     'ablation': AblationCam
 }
