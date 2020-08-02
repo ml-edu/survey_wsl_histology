@@ -161,7 +161,7 @@ def save_results(save_dir, files, labels, predictions, cams, seg_preds, dice_per
         pkl.dump(dice_per_image, f)
 
 
-def test(model, loader, device, threshold=None):
+def test(model, loader, device):
     model.eval()
     all_labels = []
     all_logits = []
@@ -216,7 +216,6 @@ def test(model, loader, device, threshold=None):
                     seg_preds_interp = (seg_logits_interp[label] > (1 / seg_logits.numel())).cpu()
                 else:
                     seg_preds_interp = (seg_logits_interp.argmax(0) == label).cpu()
-
             else:
                 if ex.current_run.config['model']['pooling'] == 'deepmil':
                     seg_preds_interp = (seg_logits_interp.squeeze(0) > (1 / seg_logits.numel())).cpu()
@@ -299,9 +298,7 @@ def get_save_name(save_dir, dataset, model):
 
 
 @ex.automain
-def main(epochs, seed, dataparallel, threshold):
-
-    print('Threshold: {}'.format(threshold))
+def main(epochs, seed, dataparallel):
 
     device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
     cudnn.deterministic = True
@@ -390,7 +387,7 @@ def main(epochs, seed, dataparallel, threshold):
     model.to(device)
 
     # evaluate on test set
-    test_metrics = test(model=model, loader=test_loader, device=device, threshold=threshold)
+    test_metrics = test(model=model, loader=test_loader, device=device)
 
     ex.log_scalar('test.loss', test_metrics['losses'].mean(), epochs)
     ex.log_scalar('test.acc', test_metrics['accuracy'], epochs)

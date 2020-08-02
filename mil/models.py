@@ -1,7 +1,6 @@
 import torch.nn as nn
 from collections import OrderedDict
 from sacred import Ingredient
-from mil.poolings import GradCAM, GradCAMpp
 
 import cnn
 from .configs import poolings
@@ -11,7 +10,8 @@ model_ingredient = Ingredient('model')
 
 @model_ingredient.config
 def config():
-    arch = 'resnet18'
+    arch = 'drn_d_22'
+    # arch = 'resnet18'
     pretrained = True
     num_classes = 2
 
