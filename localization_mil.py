@@ -34,14 +34,17 @@ ex.captured_out_filter = apply_backspaces_and_linefeeds
 
 @ex.config
 def default_config():
-    epochs = 160
+    epochs = 15
     lr = 0.01
     momentum = 0.9
     weight_decay = 1e-4
-    lr_step = 80
+    lr_step = 10
 
     save_dir = os.path.join('results', 'temp')
     dataparallel = True
+
+    # seed = 79187406
+    seed = 0
 
 requires_gradients = ['gradcampp', 'gradcam']
 
@@ -282,6 +285,7 @@ def test(model, loader, device):
     metrics['iou_per_image'] = np.array(all_ious)
     metrics['mean_iou'] = metrics['iou_per_image'].mean()
     metrics['iou'] = evaluator.intersection_over_union()[1].item()
+    metrics['conf_mat'] = evaluator.cm.numpy()
 
     if ex.current_run.config['dataset']['split'] == 0 and ex.current_run.config['dataset']['fold'] == 0:
         metrics['seg_preds'] = all_seg_preds_interp
@@ -412,7 +416,7 @@ def main(epochs, seed, dataparallel):
 
     # metrics to info.json
     info_to_save = ['labels', 'logits', 'probabilities', 'predictions', 'losses', 'accuracy', 'AP', 'confusion_matrix',
-                    'dice', 'dice_per_image', 'mean_dice', 'iou', 'iou_per_image', 'mean_iou']
+                    'dice', 'dice_per_image', 'mean_dice', 'iou', 'iou_per_image', 'mean_iou', 'conf_mat']
     for k in info_to_save:
         ex.info[k] = test_metrics[k]
 

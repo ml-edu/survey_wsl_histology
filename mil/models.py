@@ -10,8 +10,8 @@ model_ingredient = Ingredient('model')
 
 @model_ingredient.config
 def config():
-    arch = 'drn_d_22'
-    # arch = 'resnet18'
+    # arch = 'drn_d_22'
+    arch = 'resnet18'
     pretrained = True
     num_classes = 2
 
@@ -47,6 +47,9 @@ def deepmil():
     mid_channels = 128
     gated = False
 
+@model_ingredient.named_config
+def drn_pool():
+    pooling = "drn_pool"
 
 @model_ingredient.named_config
 def deepmil_multi():
@@ -138,6 +141,12 @@ def load_ablation(pooling, in_channels, num_classes):
 
     return pooling_module
 
+@model_ingredient.capture
+def load_drn_pool(pooling, in_channels, num_classes):
+    pooling_module = poolings[pooling](in_channels, num_classes)
+
+    return pooling_module
+
 _pooling_loaders = {
     'average': load_average,
     'max': load_max,
@@ -147,7 +156,8 @@ _pooling_loaders = {
     'deepmil_multi': load_deepmil_multi,
     'gradcam': load_gradcam,
     'gradcampp': load_gradcam_pp,
-    'ablation': load_ablation
+    'ablation': load_ablation,
+    'drn_pool': load_drn_pool
 }
 
 

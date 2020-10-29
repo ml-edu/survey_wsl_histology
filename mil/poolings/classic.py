@@ -87,6 +87,20 @@ class GAP(Classification):
         return self.flatten(out)
         # return self.pool(out).flatten(1)
 
+class DrnPool(Classification):
+
+    def __init__(self, in_channels, classes):
+        super(DrnPool, self).__init__(in_channels, classes)
+
+        self.pool = nn.AdaptiveAvgPool2d(1)
+        self.softmax = nn.Softmax2d()
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        out = self.conv(x)
+        # out = self.softmax(out)
+        self.cam = out.detach()
+        return self.pool(out).flatten(1)
+
 class Flatten(nn.Module):
 
     def __init__(self):
