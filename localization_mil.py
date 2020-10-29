@@ -38,10 +38,10 @@ writer = SummaryWriter()
 @ex.config
 def default_config():
     epochs = 200
-    lr = 0.01
+    lr = 0.001
     momentum = 0.9
     weight_decay = 1e-4
-    lr_step = 10
+    lr_step = 50
 
     save_dir = os.path.join('results', 'temp')
     dataparallel = True
@@ -355,7 +355,7 @@ def vae_loss(x, x_reconst, mu, logvar):
     return MSE + KLD
 
 def global_loss(x, x_reconst, mu, logvar, ypred, y):
-    balance = 0.001
+    balance = 0.1
     vloss = vae_loss(x, x_reconst, mu, logvar)
     class_loss = F.cross_entropy(ypred, y)
     return balance * vloss + (1 - balance) * class_loss

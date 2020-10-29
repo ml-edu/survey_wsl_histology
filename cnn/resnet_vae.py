@@ -95,7 +95,7 @@ class ResNet_VAE(nn.Module):
         x = self.convTrans8(x)
         x = self.convTrans9(x)
         x = self.convTrans10(x)
-        x = F.interpolate(x, size=out_shape, mode='bilinear')
+        x = F.interpolate(x, size=out_shape, mode='bilinear', align_corners=True)
         return x
 
     def forward(self, x):
