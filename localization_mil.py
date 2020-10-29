@@ -8,7 +8,7 @@ import pickle as pkl
 
 from torch.utils.tensorboard import SummaryWriter
 from copy import deepcopy
-from torch.optim import SGD, lr_scheduler
+from torch.optim import SGD, lr_scheduler, Adam
 from torch.backends import cudnn
 from torchvision.utils import make_grid, save_image
 from tqdm import tqdm
@@ -37,7 +37,7 @@ writer = SummaryWriter()
 
 @ex.config
 def default_config():
-    epochs = 100
+    epochs = 200
     lr = 0.01
     momentum = 0.9
     weight_decay = 1e-4
@@ -53,8 +53,9 @@ requires_gradients = ['gradcampp', 'gradcam']
 
 @ex.capture
 def get_optimizer_scheduler(parameters, lr, momentum, weight_decay, lr_step):
-    optimizer = SGD(parameters, lr=lr, momentum=momentum, weight_decay=weight_decay,
-                    nesterov=True if momentum else False)
+    # optimizer = SGD(parameters, lr=lr, momentum=momentum, weight_decay=weight_decay,
+    #                 nesterov=True if momentum else False)
+    optimizer = Adam(parameters, lr=lr, weight_decay=weight_decay)
     scheduler = lr_scheduler.StepLR(optimizer, step_size=lr_step)
     return optimizer, scheduler
 
@@ -283,15 +284,7 @@ def test(model, loader, device):
                                                ex.current_run.config['model']['pooling'])
                 os.makedirs(save_dir, exist_ok=True)
                 file_path = os.path.join(save_dir, 'reconst_{}.png'.format(i))
-                print(image.shape, x_reconst.shape)
                 save_reconst(image.squeeze(0).cpu(), x_reconst.squeeze(0).cpu(), file_path)
-
-
-            # Save results
-            # save_dir = 'out/{}/cams'.format(ex.current_run.config['model']['pooling'])
-            # os.makedirs(save_dir, exist_ok=True)
-            # file_path = os.path.join(save_dir, 'cams_{}.npy'.format(i))
-            # np.save(file_path, seg_logits_interp.numpy())
 
             all_seg_logits_interp.append(seg_logits_interp.numpy())
             all_seg_preds_interp.append(seg_preds_interp.numpy().astype('bool'))
@@ -357,11 +350,12 @@ def get_save_name(save_dir, dataset, model):
 
 def vae_loss(x, x_reconst, mu, logvar):
     MSE = F.mse_loss(x_reconst, x, reduction='sum')
+    # MSE = F.binary_cross_entropy(x_reconst, x, reduction='sum')
     KLD = -0.5 * torch.sum(1 + logvar - mu.pow(2) - logvar.exp())
     return MSE + KLD
 
 def global_loss(x, x_reconst, mu, logvar, ypred, y):
-    balance = 1
+    balance = 0.001
     vloss = vae_loss(x, x_reconst, mu, logvar)
     class_loss = F.cross_entropy(ypred, y)
     return balance * vloss + (1 - balance) * class_loss
@@ -379,7 +373,6 @@ def main(epochs, seed, dataparallel):
 
     if dataparallel:
         model = torch.nn.DataParallel(model)
-
 
     model.to(device)
     optimizer, scheduler = get_optimizer_scheduler(parameters=model.parameters())
@@ -409,7 +402,6 @@ def main(epochs, seed, dataparallel):
             images, labels = images.to(device), labels.to(device, non_blocking=True)
 
             if is_vae:
-                # logits, x_reconst = model(images)
                 z, x_reconst, mu, logvar = model.module.backbone(images)
                 logits = model.module.pooling(z)
             else:

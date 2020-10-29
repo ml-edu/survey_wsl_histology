@@ -170,7 +170,8 @@ def load_model(pooling):
 
     backbone = load_backbone()
     if isinstance(backbone, cnn.ResNet_VAE):
-        out_channels = backbone.resnet.inplanes
+        # out_channels = backbone.resnet.inplanes
+        out_channels = 512
     else:
         out_channels = backbone.inplanes
     pooling_module = _pooling_loaders[pooling](in_channels=out_channels)

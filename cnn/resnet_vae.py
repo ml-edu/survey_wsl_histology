@@ -61,18 +61,19 @@ class ResNet_VAE(nn.Module):
         )
 
         self.convTrans10 = nn.Sequential(
-            nn.ConvTranspose2d(in_channels=32, out_channels=16, kernel_size=self.k2, stride=self.s2,
-                               padding=self.pd2),
-            nn.BatchNorm2d(16, momentum=0.01),
-            nn.ReLU(inplace=True),  # y = (y1, y2, y3) \in [0 ,1]^3
-        )
-
-        self.convTrans11 = nn.Sequential(
-            nn.ConvTranspose2d(in_channels=16, out_channels=3, kernel_size=self.k2, stride=self.s2,
+            nn.ConvTranspose2d(in_channels=32, out_channels=3, kernel_size=self.k2, stride=self.s2,
                                padding=self.pd2),
             nn.BatchNorm2d(3, momentum=0.01),
             nn.Sigmoid(),  # y = (y1, y2, y3) \in [0 ,1]^3
+
         )
+        #
+        # self.convTrans11 = nn.Sequential(
+        #     nn.ConvTranspose2d(in_channels=16, out_channels=3, kernel_size=self.k2, stride=self.s2,
+        #                        padding=self.pd2),
+        #     nn.BatchNorm2d(3, momentum=0.01),
+        #     nn.Sigmoid(),  # y = (y1, y2, y3) \in [0 ,1]^3
+        # )
 
     def encode(self, x):
         x = self.resnet(x)  # ResNet
@@ -94,7 +95,6 @@ class ResNet_VAE(nn.Module):
         x = self.convTrans8(x)
         x = self.convTrans9(x)
         x = self.convTrans10(x)
-        x = self.convTrans11(x)
         x = F.interpolate(x, size=out_shape, mode='bilinear')
         return x
 
@@ -110,7 +110,7 @@ def resnet18_vae(pretrained=False, **kwargs):
 
 
 if __name__ == '__main__':
-    x = torch.randn(1, 3, 416, 416)
+    x = torch.randn(5, 3, 416, 416)
 
     model = ResNet_VAE()
 
