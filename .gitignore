@@ -12,3 +12,5 @@ out/
 result_figs/
 run_all_methods.sh
 test/
+reconst/
+runs/

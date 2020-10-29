@@ -185,15 +185,16 @@ def resnet152(pretrained=False, **kwargs):
 
 
 if __name__ == '__main__':
-    x = torch.randn(2, 3, 64, 64)
+    x = torch.randn(1, 3, 416, 416)
 
     models = [
         resnet18(pretrained=True),
-        resnet34(pretrained=True),
-        resnet50(pretrained=True),
-        resnet101(pretrained=True),
-        resnet152(pretrained=True),
+        # resnet34(pretrained=True),
+        # resnet50(pretrained=True),
+        # resnet101(pretrained=True),
+        # resnet152(pretrained=True),
     ]
 
     for m in models:
+        print(m)
         print(x.shape, ' -> ', m(x).shape, '\n', sep='')

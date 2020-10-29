@@ -6,6 +6,7 @@ import torch.nn.functional as F
 import cv2
 import pickle as pkl
 
+from torch.utils.tensorboard import SummaryWriter
 from copy import deepcopy
 from torch.optim import SGD, lr_scheduler
 from torch.backends import cudnn
@@ -19,6 +20,7 @@ from utils import state_dict_to_cpu, AverageMeter
 from utils.data.localization.dataset_loaders import dataset_ingredient, load_dataset
 from utils.metrics import Evaluator, metric_report
 from mil.models import model_ingredient, load_model
+from cnn import ResNet_VAE
 
 # Experiment
 from sacred import Experiment
@@ -31,10 +33,11 @@ from sacred.utils import apply_backspaces_and_linefeeds
 SETTINGS.CAPTURE_MODE = 'sys'
 ex.captured_out_filter = apply_backspaces_and_linefeeds
 
+writer = SummaryWriter()
 
 @ex.config
 def default_config():
-    epochs = 15
+    epochs = 100
     lr = 0.01
     momentum = 0.9
     weight_decay = 1e-4
@@ -70,19 +73,34 @@ def validation(model, loader, device, dataparallel):
     # else:
     #     grad_policy = torch.no_grad()
 
+    if dataparallel:
+        is_vae = isinstance(model.module.backbone, ResNet_VAE)
+    else:
+        is_vae = isinstance(model.backbone, ResNet_VAE)
+
     with torch.no_grad():
         for image, label in pbar:
-            image = image.to(device)
+            image, label = image.to(device), label.to(device)
 
-            logits = model(image).cpu()
-            if dataparallel:
+            if is_vae:
+                z, x_reconst, mu, logvar = model.module.backbone(image)
+                logits = model.module.pooling(z)
+            else:
+                logits = model(image)
+
+            if is_vae:
                 pred = model.module.pooling.predictions(logits=logits)
-                loss = model.module.pooling.loss(logits=logits, labels=label)
+                loss = global_loss(image, x_reconst, mu, logvar, logits, label)
                 probs = model.module.pooling.probabilities(logits)
             else:
-                pred = model.pooling.predictions(logits=logits)
-                loss = model.pooling.loss(logits=logits, labels=label)
-                probs = model.pooling.probabilities(logits)
+                if dataparallel:
+                    pred = model.module.pooling.predictions(logits=logits)
+                    loss = model.module.pooling.loss(logits=logits, labels=label)
+                    probs = model.module.pooling.probabilities(logits)
+                else:
+                    pred = model.pooling.predictions(logits=logits)
+                    loss = model.pooling.loss(logits=logits, labels=label)
+                    probs = model.pooling.probabilities(logits)
 
             all_labels.append(label.item())
             all_predictions.append(pred.item())
@@ -90,7 +108,7 @@ def validation(model, loader, device, dataparallel):
             all_losses.append(loss.item())
 
         all_probabilities = torch.cat(all_probabilities, 0)
-        all_probabilities = all_probabilities.detach()
+        all_probabilities = all_probabilities.detach().cpu()
 
     metrics = metric_report(np.array(all_labels), all_probabilities.numpy(), np.array(all_predictions))
     metrics['losses'] = np.array(all_losses)
@@ -117,6 +135,18 @@ def visualize_cam(mask, img):
     result = result.div(result.max()).squeeze()
 
     return heatmap, result
+
+def save_reconst(input, reconst, file_path):
+    fig, (ax1, ax2) = plt.subplots(1, 2)
+
+    ax1.imshow(input.permute(1, 2, 0))
+    ax1.set_title('input')
+
+    ax2.imshow(reconst.permute(1, 2, 0))
+    ax2.set_title('reconstruction')
+
+    plt.savefig(file_path)
+    plt.close(fig)
 
 def save_visualization(image, mask, saliency_map_0, saliency_map_1, overlay, seg_pred, file_path):
     fig, (ax1, ax2, ax3, ax33, ax4, ax5) = plt.subplots(1, 6, figsize=(20, 10))
@@ -185,17 +215,27 @@ def test(model, loader, device):
     else:
         grad_policy = torch.no_grad()
 
+    is_vae = isinstance(model.backbone, ResNet_VAE)
+
     with grad_policy:
         for i, (image, segmentation, label) in enumerate(pbar):
-            image = image.to(device)
+            image, label = image.to(device), label.to(device)
 
             if pooling in requires_gradients or pooling == 'ablation':
                 model.pooling.eval_cams = True
 
-            logits = model(image).cpu()
+            if is_vae:
+                z, x_reconst, mu, logvar = model.backbone(image)
+                logits = model.pooling(z)
+            else:
+                logits = model(image)
 
             pred = model.pooling.predictions(logits=logits).item()
-            loss = model.pooling.loss(logits=logits, labels=label)
+
+            if is_vae:
+                loss = global_loss(image, x_reconst, mu, logvar, logits, label)
+            else:
+                loss = model.pooling.loss(logits=logits, labels=label)
 
             if ex.current_run.config['dataset']['name'] == 'caltech_birds':
                 segmentation_classes = (segmentation.squeeze() > 0.5)
@@ -228,7 +268,7 @@ def test(model, loader, device):
                     seg_preds_interp = seg_logits_interp.argmax(0).cpu()
 
 
-            # Save visualization
+            # Save CAMs visualization
             save_dir = 'cams/{}/{}'.format(ex.current_run.config['model']['arch'], ex.current_run.config['model']['pooling'])
             os.makedirs(save_dir, exist_ok=True)
             file_path = os.path.join(save_dir, 'cam_{}.png'.format(i))
@@ -237,6 +277,15 @@ def test(model, loader, device):
             saliency_map_1, overlay_1 = visualize_cam(seg_logits_interp_norm[1], image)
             overlay = [overlay_0, overlay_1][label]
             save_visualization(image.squeeze().cpu(), segmentation_classes.numpy(), saliency_map_0, saliency_map_1, overlay, seg_preds_interp.numpy() * 255, file_path)
+
+            if is_vae:
+                save_dir = 'reconst/{}/{}'.format(ex.current_run.config['model']['arch'],
+                                               ex.current_run.config['model']['pooling'])
+                os.makedirs(save_dir, exist_ok=True)
+                file_path = os.path.join(save_dir, 'reconst_{}.png'.format(i))
+                print(image.shape, x_reconst.shape)
+                save_reconst(image.squeeze(0).cpu(), x_reconst.squeeze(0).cpu(), file_path)
+
 
             # Save results
             # save_dir = 'out/{}/cams'.format(ex.current_run.config['model']['pooling'])
@@ -300,6 +349,22 @@ def get_save_name(save_dir, dataset, model):
     name = '{}_{}_{}_{}_{}'.format(exp_name, ex.current_run._id, dataset['name'], model['pooling'], start_time)
     return os.path.join(save_dir, name)
 
+# def vae_loss(x, x_reconst, y, y_pred):
+#     vae_lambda = 0.8
+#     vae_loss = F.mse_loss(x_reconst, x)
+#     class_loss = F.cross_entropy(y_pred, y)
+#     return vae_loss * vae_lambda + (1 - vae_lambda) * class_loss
+
+def vae_loss(x, x_reconst, mu, logvar):
+    MSE = F.mse_loss(x_reconst, x, reduction='sum')
+    KLD = -0.5 * torch.sum(1 + logvar - mu.pow(2) - logvar.exp())
+    return MSE + KLD
+
+def global_loss(x, x_reconst, mu, logvar, ypred, y):
+    balance = 1
+    vloss = vae_loss(x, x_reconst, mu, logvar)
+    class_loss = F.cross_entropy(ypred, y)
+    return balance * vloss + (1 - balance) * class_loss
 
 @ex.automain
 def main(epochs, seed, dataparallel):
@@ -326,8 +391,10 @@ def main(epochs, seed, dataparallel):
     best_valid_loss = float('inf')
     if dataparallel:
         best_model_dict = deepcopy(model.module.state_dict())
+        is_vae = isinstance(model.module.backbone, ResNet_VAE)
     else:
         best_model_dict = deepcopy(model.state_dict())
+        is_vae = isinstance(model.backbone, ResNet_VAE)
 
     for epoch in range(epochs):
         model.train()
@@ -341,13 +408,24 @@ def main(epochs, seed, dataparallel):
         for i, (images, labels) in enumerate(pbar):
             images, labels = images.to(device), labels.to(device, non_blocking=True)
 
-            logits = model(images)
-            if dataparallel:
-                predictions = model.module.pooling.predictions(logits=logits)
-                loss = model.module.pooling.loss(logits=logits, labels=labels)
+            if is_vae:
+                # logits, x_reconst = model(images)
+                z, x_reconst, mu, logvar = model.module.backbone(images)
+                logits = model.module.pooling(z)
             else:
-                predictions = model.pooling.predictions(logits=logits)
-                loss = model.pooling.loss(logits=logits, labels=labels)
+                logits = model(images)
+
+
+            if is_vae:
+                predictions = model.module.pooling.predictions(logits=logits)
+                loss = global_loss(images, x_reconst, mu, logvar, logits, labels)
+            else:
+                if dataparallel:
+                    predictions = model.module.pooling.predictions(logits=logits)
+                    loss = model.module.pooling.loss(logits=logits, labels=labels)
+                else:
+                    predictions = model.pooling.predictions(logits=logits)
+                    loss = model.pooling.loss(logits=logits, labels=labels)
             optimizer.zero_grad()
             loss.backward()
             optimizer.step()
@@ -365,6 +443,8 @@ def main(epochs, seed, dataparallel):
         end = time.time()
         duration = end - start
 
+        writer.add_scalar('Loss/train', train_losses.avg, epoch)
+
         # evaluate on validation set
         valid_metrics = validation(model=model, loader=valid_loader, device=device, dataparallel=dataparallel)
 
@@ -378,6 +458,8 @@ def main(epochs, seed, dataparallel):
 
         ex.log_scalar('validation.loss', valid_metrics['losses'].mean(), epoch + 1)
         ex.log_scalar('validation.acc', valid_metrics['accuracy'], epoch + 1)
+
+        writer.add_scalar('Loss/val', valid_metrics['losses'].mean(), epoch + 1)
 
         print('Epoch {:02d} | Duration: {:.1f}s - per batch ({}): {:.3f}s'.format(epoch, duration, loader_length,
                                                                                   duration / loader_length))
