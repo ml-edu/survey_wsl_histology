@@ -37,11 +37,11 @@ writer = SummaryWriter()
 
 @ex.config
 def default_config():
-    epochs = 160
+    epochs = 30
     lr = 0.0001
     momentum = 0.9
     weight_decay = 1e-4
-    lr_step = 160
+    lr_step = 15
 
     save_dir = os.path.join('results', 'temp')
     dataparallel = True
@@ -51,6 +51,8 @@ def default_config():
 
     # balance = 0.000001
     balance = 0.0001
+
+    thresh = 0.2
 
 requires_gradients = ['gradcampp', 'gradcam']
 
@@ -202,8 +204,8 @@ def save_results(save_dir, files, labels, predictions, cams, seg_preds, dice_per
     with open(save_dir + '/dice_per_image.pkl', 'wb') as f:
         pkl.dump(dice_per_image, f)
 
-
-def test(model, loader, device):
+@ex.capture
+def test(model, loader, device, thresh):
     model.eval()
     all_labels = []
     all_logits = []
@@ -267,7 +269,8 @@ def test(model, loader, device):
                 if ex.current_run.config['model']['pooling'] == 'deepmil_multi':
                     seg_preds_interp = (seg_logits_interp[label] > (1 / seg_logits.numel())).cpu()
                 else:
-                    seg_preds_interp = (seg_logits_interp.argmax(0) == label).cpu()
+                    # seg_preds_interp = (seg_logits_interp.argmax(0) == label).cpu()
+                    seg_preds_interp = (seg_logits_interp[pred] > thresh).cpu()
             else:
                 if ex.current_run.config['model']['pooling'] == 'deepmil':
                     seg_preds_interp = (seg_logits_interp.squeeze(0) > (1 / seg_logits.numel())).cpu()
