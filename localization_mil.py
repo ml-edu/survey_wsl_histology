@@ -37,11 +37,11 @@ writer = SummaryWriter()
 
 @ex.config
 def default_config():
-    epochs = 200
-    lr = 0.001
+    epochs = 160
+    lr = 0.0001
     momentum = 0.9
     weight_decay = 1e-4
-    lr_step = 50
+    lr_step = 160
 
     save_dir = os.path.join('results', 'temp')
     dataparallel = True
@@ -49,13 +49,16 @@ def default_config():
     # seed = 79187406
     seed = 0
 
+    # balance = 0.000001
+    balance = 0.0001
+
 requires_gradients = ['gradcampp', 'gradcam']
 
 @ex.capture
 def get_optimizer_scheduler(parameters, lr, momentum, weight_decay, lr_step):
     # optimizer = SGD(parameters, lr=lr, momentum=momentum, weight_decay=weight_decay,
     #                 nesterov=True if momentum else False)
-    optimizer = Adam(parameters, lr=lr, weight_decay=weight_decay)
+    optimizer = Adam(parameters, lr=lr)
     scheduler = lr_scheduler.StepLR(optimizer, step_size=lr_step)
     return optimizer, scheduler
 
@@ -149,24 +152,29 @@ def save_reconst(input, reconst, file_path):
     plt.savefig(file_path)
     plt.close(fig)
 
-def save_visualization(image, mask, saliency_map_0, saliency_map_1, overlay, seg_pred, file_path):
-    fig, (ax1, ax2, ax3, ax33, ax4, ax5) = plt.subplots(1, 6, figsize=(20, 10))
+def save_visualization(image, mask, saliency_map_0, saliency_map_1, overlay, seg_pred, label, file_path):
+    # fig, (ax1, ax2, ax3, ax33, ax4, ax5) = plt.subplots(1, 6, figsize=(20, 10))
+    fig, (ax1, ax2, ax4, ax5) = plt.subplots(1, 4, figsize=(20, 10))
     ax1.imshow(image.permute(1, 2, 0))
     ax1.set_title('input')
 
-    ax2.imshow(mask)
+    ax2.imshow(image.permute(1, 2, 0))
+    ax2.imshow(mask, alpha=0.5, cmap='jet')
     ax2.set_title('gt mask')
 
-    ax3.imshow(saliency_map_0.permute(1, 2, 0))
-    ax3.set_title('img level class saliency map')
 
-    ax33.imshow(saliency_map_1.permute(1, 2, 0))
-    ax33.set_title('img level class saliency map')
+    # ax3.imshow(saliency_map_0.permute(1, 2, 0))
+    # ax3.set_title('img level class saliency map')
+    #
+    # ax33.imshow(saliency_map_1.permute(1, 2, 0))
+    # ax33.set_title('img level class saliency map')
 
-    ax4.imshow(overlay.permute(1, 2, 0))
-    ax4.set_title('saliency overlay')
+    ax4.imshow(image.permute(1, 2, 0))
+    ax4.imshow([saliency_map_0, saliency_map_1][label].permute(1, 2, 0), alpha=0.5, cmap='jet')
+    ax4.set_title('CAM overlay')
 
-    ax5.imshow(seg_pred)
+    ax5.imshow(image.permute(1, 2, 0))
+    ax5.imshow(seg_pred, alpha=0.5, cmap='jet')
     ax5.set_title('segmentation prediction')
 
     plt.savefig(file_path)
@@ -251,7 +259,7 @@ def test(model, loader, device):
 
             label = label.item()
             all_labels.append(label)
-            all_logits.append(logits)
+            all_logits.append(logits.cpu())
             all_predictions.append(pred)
             all_losses.append(loss.item())
 
@@ -270,16 +278,18 @@ def test(model, loader, device):
 
 
             # Save CAMs visualization
-            save_dir = 'cams/{}/{}'.format(ex.current_run.config['model']['arch'], ex.current_run.config['model']['pooling'])
+            save_dir = 'cams/{}/{}'.format(ex.current_run.config['model']['arch'] +
+                                           str(ex.current_run.config['balance']), ex.current_run.config['model']['pooling'])
             os.makedirs(save_dir, exist_ok=True)
             file_path = os.path.join(save_dir, 'cam_{}.png'.format(i))
             seg_logits_interp_norm = seg_logits_interp / seg_logits_interp.max()
             saliency_map_0, overlay_0 = visualize_cam(seg_logits_interp_norm[0], image)
             saliency_map_1, overlay_1 = visualize_cam(seg_logits_interp_norm[1], image)
             overlay = [overlay_0, overlay_1][label]
-            save_visualization(image.squeeze().cpu(), segmentation_classes.numpy(), saliency_map_0, saliency_map_1, overlay, seg_preds_interp.numpy() * 255, file_path)
+            save_visualization(image.squeeze().cpu(), segmentation_classes.numpy(), saliency_map_0, saliency_map_1, overlay, seg_preds_interp.numpy() * 255, label,file_path)
 
             if is_vae:
+                x_reconst = x_reconst.detach()
                 save_dir = 'reconst/{}/{}'.format(ex.current_run.config['model']['arch'],
                                                ex.current_run.config['model']['pooling'])
                 os.makedirs(save_dir, exist_ok=True)
@@ -304,7 +314,8 @@ def test(model, loader, device):
     with open('test/gradcampp_seg_preds.pkl', 'wb') as f:
         pkl.dump(all_seg_preds_interp, f)
 
-    results_dir = 'out/{}/{}'.format(ex.current_run.config['model']['arch'], ex.current_run.config['model']['pooling'])
+    results_dir = 'out/{}/{}'.format(ex.current_run.config['model']['arch']
+                                     + str(ex.current_run.config['balance']), ex.current_run.config['model']['pooling'])
     save_results(results_dir,
                  loader.dataset.samples,
                  np.array(all_labels),
@@ -342,23 +353,18 @@ def get_save_name(save_dir, dataset, model):
     name = '{}_{}_{}_{}_{}'.format(exp_name, ex.current_run._id, dataset['name'], model['pooling'], start_time)
     return os.path.join(save_dir, name)
 
-# def vae_loss(x, x_reconst, y, y_pred):
-#     vae_lambda = 0.8
-#     vae_loss = F.mse_loss(x_reconst, x)
-#     class_loss = F.cross_entropy(y_pred, y)
-#     return vae_loss * vae_lambda + (1 - vae_lambda) * class_loss
 
 def vae_loss(x, x_reconst, mu, logvar):
     MSE = F.mse_loss(x_reconst, x, reduction='sum')
     # MSE = F.binary_cross_entropy(x_reconst, x, reduction='sum')
-    KLD = -0.5 * torch.sum(1 + logvar - mu.pow(2) - logvar.exp())
+    KLD = -0.5 * torch.mean(1 + logvar - mu**2 - logvar.exp())
     return MSE + KLD
 
-def global_loss(x, x_reconst, mu, logvar, ypred, y):
-    balance = 0.1
+@ex.capture
+def global_loss(x, x_reconst, mu, logvar, ypred, y, balance):
     vloss = vae_loss(x, x_reconst, mu, logvar)
     class_loss = F.cross_entropy(ypred, y)
-    return balance * vloss + (1 - balance) * class_loss
+    return balance * vloss + class_loss
 
 @ex.automain
 def main(epochs, seed, dataparallel):
@@ -494,4 +500,4 @@ def main(epochs, seed, dataparallel):
     for k in info_to_save:
         ex.info[k] = test_metrics[k]
 
-    return test_metrics['mean_dice']
+    return test_metrics['mean_dice'], test_metrics['dice'], test_metrics['accuracy']

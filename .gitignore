@@ -14,3 +14,4 @@ run_all_methods.sh
 test/
 reconst/
 runs/
+results_vae/

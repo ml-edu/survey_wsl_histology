@@ -15,7 +15,7 @@ def metric_report(labels: np.ndarray, probabilities: np.ndarray, predictions: np
     else:
         one_hot_labels = np.zeros(probabilities.shape)
         one_hot_labels[range(len(labels)), labels] = 1
-        results['AP'] = metrics.average_precision_score(one_hot_labels, probabilities, average=None)
+        results['AP'] = metrics.average_precision_score(one_hot_labels, np.nan_to_num(probabilities), average=None)
 
     return results
 
