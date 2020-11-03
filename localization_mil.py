@@ -269,7 +269,8 @@ def test(model, loader, device, thresh):
                     seg_preds_interp = (seg_logits_interp[label] > (1 / seg_logits.numel())).cpu()
                 else:
                     # seg_preds_interp = (seg_logits_interp.argmax(0) == label).cpu()
-                    seg_preds_interp = (seg_logits_interp[pred] > thresh).cpu()
+                    cam = seg_logits_interp[pred]/seg_logits_interp[pred].max()
+                    seg_preds_interp = (cam > thresh).cpu()
             else:
                 if ex.current_run.config['model']['pooling'] == 'deepmil':
                     seg_preds_interp = (seg_logits_interp.squeeze(0) > (1 / seg_logits.numel())).cpu()
