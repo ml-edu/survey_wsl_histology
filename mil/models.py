@@ -12,10 +12,10 @@ model_ingredient = Ingredient('model')
 def config():
     # arch = 'drn_d_22'
     # arch = 'resnet18'
-    arch = 'resnet18_vae'
+    # arch = 'resnet18_vae'
+    arch = 'resnet18_ae'
     pretrained = True
     num_classes = 2
-
 
 @model_ingredient.named_config
 def average():
@@ -169,7 +169,7 @@ def load_model(pooling):
         raise ValueError('Invalid choice for pooling - choices: {}'.format(' | '.join(pooling_names)))
 
     backbone = load_backbone()
-    if isinstance(backbone, cnn.ResNet_VAE):
+    if isinstance(backbone, cnn.ResNet_VAE) or isinstance(backbone, cnn.ResNet_AE):
         # out_channels = backbone.resnet.inplanes
         out_channels = 512
     else:

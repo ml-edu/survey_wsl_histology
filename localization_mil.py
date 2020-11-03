@@ -20,7 +20,7 @@ from utils import state_dict_to_cpu, AverageMeter
 from utils.data.localization.dataset_loaders import dataset_ingredient, load_dataset
 from utils.metrics import Evaluator, metric_report
 from mil.models import model_ingredient, load_model
-from cnn import ResNet_VAE
+from cnn import ResNet_VAE, ResNet_AE
 
 # Experiment
 from sacred import Experiment
@@ -44,7 +44,6 @@ def default_config():
     lr_step = 15
 
     save_dir = os.path.join('results', 'temp')
-    dataparallel = True
 
     # seed = 79187406
     seed = 0
@@ -65,7 +64,7 @@ def get_optimizer_scheduler(parameters, lr, momentum, weight_decay, lr_step):
     return optimizer, scheduler
 
 
-def validation(model, loader, device, dataparallel):
+def validation(model, loader, device):
     model.eval()
     all_labels = []
     all_probabilities = []
@@ -79,10 +78,8 @@ def validation(model, loader, device, dataparallel):
     # else:
     #     grad_policy = torch.no_grad()
 
-    if dataparallel:
-        is_vae = isinstance(model.module.backbone, ResNet_VAE)
-    else:
-        is_vae = isinstance(model.backbone, ResNet_VAE)
+    is_vae = isinstance(model.module.backbone, ResNet_VAE)
+    is_ae = isinstance(model.module.backbone, ResNet_AE)
 
     with torch.no_grad():
         for image, label in pbar:
@@ -91,22 +88,20 @@ def validation(model, loader, device, dataparallel):
             if is_vae:
                 z, x_reconst, mu, logvar = model.module.backbone(image)
                 logits = model.module.pooling(z)
+            elif is_ae:
+                z, x_reconst = model.module.backbone(image)
+                logits = model.module.pooling(z)
             else:
                 logits = model(image)
 
             if is_vae:
                 pred = model.module.pooling.predictions(logits=logits)
-                loss = global_loss(image, x_reconst, mu, logvar, logits, label)
+                loss = vae_loss(image, x_reconst, mu, logvar, logits, label)
                 probs = model.module.pooling.probabilities(logits)
             else:
-                if dataparallel:
-                    pred = model.module.pooling.predictions(logits=logits)
-                    loss = model.module.pooling.loss(logits=logits, labels=label)
-                    probs = model.module.pooling.probabilities(logits)
-                else:
-                    pred = model.pooling.predictions(logits=logits)
-                    loss = model.pooling.loss(logits=logits, labels=label)
-                    probs = model.pooling.probabilities(logits)
+                pred = model.module.pooling.predictions(logits=logits)
+                loss = model.module.pooling.loss(logits=logits, labels=label)
+                probs = model.module.pooling.probabilities(logits)
 
             all_labels.append(label.item())
             all_predictions.append(pred.item())
@@ -227,6 +222,7 @@ def test(model, loader, device, thresh):
         grad_policy = torch.no_grad()
 
     is_vae = isinstance(model.backbone, ResNet_VAE)
+    is_ae = isinstance(model.backbone, ResNet_AE)
 
     with grad_policy:
         for i, (image, segmentation, label) in enumerate(pbar):
@@ -238,13 +234,16 @@ def test(model, loader, device, thresh):
             if is_vae:
                 z, x_reconst, mu, logvar = model.backbone(image)
                 logits = model.pooling(z)
+            elif is_ae:
+                z, x_reconst = model.backbone(image)
+                logits = model.pooling(z)
             else:
                 logits = model(image)
 
             pred = model.pooling.predictions(logits=logits).item()
 
             if is_vae:
-                loss = global_loss(image, x_reconst, mu, logvar, logits, label)
+                loss = vae_loss(image, x_reconst, mu, logvar, logits, label)
             else:
                 loss = model.pooling.loss(logits=logits, labels=label)
 
@@ -291,7 +290,7 @@ def test(model, loader, device, thresh):
             overlay = [overlay_0, overlay_1][label]
             save_visualization(image.squeeze().cpu(), segmentation_classes.numpy(), saliency_map_0, saliency_map_1, overlay, seg_preds_interp.numpy() * 255, label,file_path)
 
-            if is_vae:
+            if is_vae or is_ae:
                 x_reconst = x_reconst.detach()
                 save_dir = 'reconst/{}/{}'.format(ex.current_run.config['model']['arch'],
                                                ex.current_run.config['model']['pooling'])
@@ -363,14 +362,23 @@ def vae_loss(x, x_reconst, mu, logvar):
     KLD = -0.5 * torch.mean(1 + logvar - mu**2 - logvar.exp())
     return MSE + KLD
 
+
 @ex.capture
-def global_loss(x, x_reconst, mu, logvar, ypred, y, balance):
+def vae_loss(x, x_reconst, mu, logvar, ypred, y, balance):
     vloss = vae_loss(x, x_reconst, mu, logvar)
     class_loss = F.cross_entropy(ypred, y)
     return balance * vloss + class_loss
 
+
+@ex.capture
+def ae_loss(x, x_reconst, ypred, y, balance):
+    mse_loss = F.mse_loss(x_reconst, x, reduction='sum')
+    class_loss = F.cross_entropy(ypred, y)
+    return balance * mse_loss + class_loss
+
+
 @ex.automain
-def main(epochs, seed, dataparallel):
+def main(epochs, seed):
 
     device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
     cudnn.deterministic = True
@@ -380,8 +388,7 @@ def main(epochs, seed, dataparallel):
     model = load_model()
     print(model)
 
-    if dataparallel:
-        model = torch.nn.DataParallel(model)
+    model = torch.nn.DataParallel(model)
 
     model.to(device)
     optimizer, scheduler = get_optimizer_scheduler(parameters=model.parameters())
@@ -391,12 +398,9 @@ def main(epochs, seed, dataparallel):
 
     best_valid_acc = 0
     best_valid_loss = float('inf')
-    if dataparallel:
-        best_model_dict = deepcopy(model.module.state_dict())
-        is_vae = isinstance(model.module.backbone, ResNet_VAE)
-    else:
-        best_model_dict = deepcopy(model.state_dict())
-        is_vae = isinstance(model.backbone, ResNet_VAE)
+    best_model_dict = deepcopy(model.module.state_dict())
+    is_vae = isinstance(model.module.backbone, ResNet_VAE)
+    is_ae = isinstance(model.module.backbone, ResNet_AE)
 
     for epoch in range(epochs):
         model.train()
@@ -413,20 +417,19 @@ def main(epochs, seed, dataparallel):
             if is_vae:
                 z, x_reconst, mu, logvar = model.module.backbone(images)
                 logits = model.module.pooling(z)
+                predictions = model.module.pooling.predictions(logits=logits)
+                loss = vae_loss(images, x_reconst, mu, logvar, logits, labels)
+            elif is_ae:
+                z, x_reconst = model.module.backbone(images)
+                logits = model.module.pooling(z)
+                predictions = model.module.pooling.predictions(logits=logits)
+                loss = ae_loss(images, x_reconst, logits, labels)
             else:
                 logits = model(images)
-
-
-            if is_vae:
                 predictions = model.module.pooling.predictions(logits=logits)
-                loss = global_loss(images, x_reconst, mu, logvar, logits, labels)
-            else:
-                if dataparallel:
-                    predictions = model.module.pooling.predictions(logits=logits)
-                    loss = model.module.pooling.loss(logits=logits, labels=labels)
-                else:
-                    predictions = model.pooling.predictions(logits=logits)
-                    loss = model.pooling.loss(logits=logits, labels=labels)
+                loss = model.module.pooling.loss(logits=logits, labels=labels)
+
+
             optimizer.zero_grad()
             loss.backward()
             optimizer.step()
@@ -447,15 +450,12 @@ def main(epochs, seed, dataparallel):
         writer.add_scalar('Loss/train', train_losses.avg, epoch)
 
         # evaluate on validation set
-        valid_metrics = validation(model=model, loader=valid_loader, device=device, dataparallel=dataparallel)
+        valid_metrics = validation(model=model, loader=valid_loader, device=device)
 
         if valid_metrics['losses'].mean() <= best_valid_loss:
             best_valid_acc = valid_metrics['accuracy']
             best_valid_loss = valid_metrics['losses'].mean()
-            if dataparallel:
-                best_model_dict = deepcopy(model.module.state_dict())
-            else:
-                best_model_dict = deepcopy(model.state_dict())
+            best_model_dict = deepcopy(model.module.state_dict())
 
         ex.log_scalar('validation.loss', valid_metrics['losses'].mean(), epoch + 1)
         ex.log_scalar('validation.acc', valid_metrics['accuracy'], epoch + 1)
