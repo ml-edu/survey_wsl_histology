@@ -14,7 +14,6 @@ def config():
     pretrained = True
     num_classes = 2
 
-
 @model_ingredient.named_config
 def average():
     pooling = 'average'
@@ -46,6 +45,9 @@ def deepmil():
     mid_channels = 128
     gated = False
 
+@model_ingredient.named_config
+def drn_pool():
+    pooling = "drn_pool"
 
 @model_ingredient.named_config
 def deepmil_multi():
@@ -53,6 +55,19 @@ def deepmil_multi():
     mid_channels = 128
     gated = False
 
+
+@model_ingredient.named_config
+def gradcampp():
+    pooling = 'gradcampp'
+
+
+@model_ingredient.named_config
+def gradcam():
+    pooling = 'gradcam'
+
+@model_ingredient.named_config
+def ablation():
+    pooling = 'ablation'
 
 @model_ingredient.capture
 def load_backbone(arch, pretrained):
@@ -106,6 +121,29 @@ def load_deepmil_multi(pooling, in_channels, mid_channels, num_classes, gated):
 
     return pooling_module
 
+@model_ingredient.capture
+def load_gradcam_pp(pooling, in_channels, num_classes):
+    pooling_module = poolings[pooling](in_channels, num_classes)
+
+    return pooling_module
+
+@model_ingredient.capture
+def load_gradcam(pooling, in_channels, num_classes):
+    pooling_module = poolings[pooling](in_channels, num_classes)
+
+    return pooling_module
+
+@model_ingredient.capture
+def load_ablation(pooling, in_channels, num_classes):
+    pooling_module = poolings[pooling](in_channels, num_classes)
+
+    return pooling_module
+
+@model_ingredient.capture
+def load_drn_pool(pooling, in_channels, num_classes):
+    pooling_module = poolings[pooling](in_channels, num_classes)
+
+    return pooling_module
 
 _pooling_loaders = {
     'average': load_average,
@@ -114,6 +152,10 @@ _pooling_loaders = {
     'wildcat': load_wildcat,
     'deepmil': load_deepmil,
     'deepmil_multi': load_deepmil_multi,
+    'gradcam': load_gradcam,
+    'gradcampp': load_gradcam_pp,
+    'ablation': load_ablation,
+    'drn_pool': load_drn_pool
 }
 
 
@@ -125,11 +167,21 @@ def load_model(pooling):
 
     backbone = load_backbone()
     out_channels = backbone.inplanes
-    pooling = _pooling_loaders[pooling](in_channels=out_channels)
+    pooling_module = _pooling_loaders[pooling](in_channels=out_channels)
+
+    # if pooling == 'gradcampp':
+    #     model = GradCAMpp(backbone=backbone, pooling=pooling_module)
+    # # elif pooling == 'gradcam':
+    # #     model = GradCAM(backbone=backbone, pooling=pooling_module)
+    # else:
+    #     model = nn.Sequential(OrderedDict([
+    #         ('backbone', backbone),
+    #         ('pooling', pooling_module)
+    #     ]))
 
     model = nn.Sequential(OrderedDict([
         ('backbone', backbone),
-        ('pooling', pooling)
+        ('pooling', pooling_module)
     ]))
 
     return model

@@ -4,3 +4,14 @@ data/*
 folds/*
 results/*
 __pycache__/
+.ipynb_checkpoints/
+Untitled.ipynb
+Untitled1.ipynb
+npy_results/
+out/
+result_figs/
+run_all_methods.sh
+test/
+reconst/
+runs/
+results_vae/

@@ -2,7 +2,7 @@ import numpy as np
 import random
 import os
 import warnings
-
+import torch
 
 DEFAULT_SEED = 0
 MAX_SEED = 2**32 - 1  # maximum allowed seed (for now, it is the minimum value accepted by all the concerned modules
