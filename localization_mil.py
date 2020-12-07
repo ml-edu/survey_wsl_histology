@@ -20,7 +20,7 @@ from utils import state_dict_to_cpu, AverageMeter
 from utils.data.localization.dataset_loaders import dataset_ingredient, load_dataset
 from utils.metrics import Evaluator, metric_report
 from mil.models import model_ingredient, load_model
-from cnn import ResNet_VAE, ResNet_AE
+from cnn import ResNet_AE
 
 # Experiment
 from sacred import Experiment
@@ -45,21 +45,16 @@ def default_config():
 
     save_dir = os.path.join('results', 'temp')
 
-    # seed = 79187406
     seed = 0
 
-    # balance = 0.000001
     balance = 0.0001
-
-    thresh = 0.2
 
 requires_gradients = ['gradcampp', 'gradcam']
 
 @ex.capture
 def get_optimizer_scheduler(parameters, lr, momentum, weight_decay, lr_step):
-    # optimizer = SGD(parameters, lr=lr, momentum=momentum, weight_decay=weight_decay,
-    #                 nesterov=True if momentum else False)
-    optimizer = Adam(parameters, lr=lr)
+    optimizer = SGD(parameters, lr=lr, momentum=momentum, weight_decay=weight_decay,
+                    nesterov=True if momentum else False)
     scheduler = lr_scheduler.StepLR(optimizer, step_size=lr_step)
     return optimizer, scheduler
 
@@ -73,35 +68,23 @@ def validation(model, loader, device):
 
     pbar = tqdm(loader, ncols=80, desc='Validation')
 
-    # if ex.current_run.config['model']['pooling'] in requires_gradients:
-    #     grad_policy = torch.set_grad_enabled(True)
-    # else:
-    #     grad_policy = torch.no_grad()
 
-    is_vae = isinstance(model.module.backbone, ResNet_VAE)
     is_ae = isinstance(model.module.backbone, ResNet_AE)
 
     with torch.no_grad():
         for image, label in pbar:
             image, label = image.to(device), label.to(device)
 
-            if is_vae:
-                z, x_reconst, mu, logvar = model.module.backbone(image)
-                logits = model.module.pooling(z)
-            elif is_ae:
+            if is_ae:
                 z, x_reconst = model.module.backbone(image)
                 logits = model.module.pooling(z)
             else:
                 logits = model(image)
 
-            if is_vae:
-                pred = model.module.pooling.predictions(logits=logits)
-                loss = vae_loss(image, x_reconst, mu, logvar, logits, label)
-                probs = model.module.pooling.probabilities(logits)
-            else:
-                pred = model.module.pooling.predictions(logits=logits)
-                loss = model.module.pooling.loss(logits=logits, labels=label)
-                probs = model.module.pooling.probabilities(logits)
+
+            pred = model.module.pooling.predictions(logits=logits)
+            loss = model.module.pooling.loss(logits=logits, labels=label)
+            probs = model.module.pooling.probabilities(logits)
 
             all_labels.append(label.item())
             all_predictions.append(pred.item())
@@ -150,7 +133,6 @@ def save_reconst(input, reconst, file_path):
     plt.close(fig)
 
 def save_visualization(image, mask, saliency_map_0, saliency_map_1, overlay, seg_pred, label, file_path):
-    # fig, (ax1, ax2, ax3, ax33, ax4, ax5) = plt.subplots(1, 6, figsize=(20, 10))
     fig, (ax1, ax2, ax4, ax5) = plt.subplots(1, 4, figsize=(20, 10))
     ax1.imshow(image.permute(1, 2, 0))
     ax1.set_title('input')
@@ -158,13 +140,6 @@ def save_visualization(image, mask, saliency_map_0, saliency_map_1, overlay, seg
     ax2.imshow(image.permute(1, 2, 0))
     ax2.imshow(mask, alpha=0.5, cmap='jet')
     ax2.set_title('gt mask')
-
-
-    # ax3.imshow(saliency_map_0.permute(1, 2, 0))
-    # ax3.set_title('img level class saliency map')
-    #
-    # ax33.imshow(saliency_map_1.permute(1, 2, 0))
-    # ax33.set_title('img level class saliency map')
 
     ax4.imshow(image.permute(1, 2, 0))
     ax4.imshow([saliency_map_0, saliency_map_1][label].permute(1, 2, 0), alpha=0.5, cmap='jet')
@@ -200,7 +175,7 @@ def save_results(save_dir, files, labels, predictions, cams, seg_preds, dice_per
         pkl.dump(dice_per_image, f)
 
 @ex.capture
-def test(model, loader, device, thresh):
+def test(model, loader, device):
     model.eval()
     all_labels = []
     all_logits = []
@@ -221,7 +196,6 @@ def test(model, loader, device, thresh):
     else:
         grad_policy = torch.no_grad()
 
-    is_vae = isinstance(model.backbone, ResNet_VAE)
     is_ae = isinstance(model.backbone, ResNet_AE)
 
     with grad_policy:
@@ -231,10 +205,7 @@ def test(model, loader, device, thresh):
             if pooling in requires_gradients or pooling == 'ablation':
                 model.pooling.eval_cams = True
 
-            if is_vae:
-                z, x_reconst, mu, logvar = model.backbone(image)
-                logits = model.pooling(z)
-            elif is_ae:
+            if is_ae:
                 z, x_reconst = model.backbone(image)
                 logits = model.pooling(z)
             else:
@@ -242,17 +213,12 @@ def test(model, loader, device, thresh):
 
             pred = model.pooling.predictions(logits=logits).item()
 
-            if is_vae:
-                loss = vae_loss(image, x_reconst, mu, logvar, logits, label)
-            else:
-                loss = model.pooling.loss(logits=logits, labels=label)
+            loss = model.pooling.loss(logits=logits, labels=label)
 
             if ex.current_run.config['dataset']['name'] == 'caltech_birds':
                 segmentation_classes = (segmentation.squeeze() > 0.5)
             else:
                 segmentation_classes = (segmentation.squeeze() != 0)
-
-            seg_shape = segmentation_classes.shape
 
             seg_logits = model.pooling.cam.detach().cpu()
             seg_logits_interp = F.interpolate(seg_logits, size=segmentation_classes.shape,
@@ -268,9 +234,7 @@ def test(model, loader, device, thresh):
                 if ex.current_run.config['model']['pooling'] == 'deepmil_multi':
                     seg_preds_interp = (seg_logits_interp[label] > (1 / seg_logits.numel())).cpu()
                 else:
-                    # seg_preds_interp = (seg_logits_interp.argmax(0) == label).cpu()
-                    cam = seg_logits_interp[pred]/seg_logits_interp[pred].max()
-                    seg_preds_interp = (cam > thresh).cpu()
+                    seg_preds_interp = (seg_logits_interp.argmax(0) == label).cpu()
             else:
                 if ex.current_run.config['model']['pooling'] == 'deepmil':
                     seg_preds_interp = (seg_logits_interp.squeeze(0) > (1 / seg_logits.numel())).cpu()
@@ -291,7 +255,7 @@ def test(model, loader, device, thresh):
             overlay = [overlay_0, overlay_1][label]
             save_visualization(image.squeeze().cpu(), segmentation_classes.numpy(), saliency_map_0, saliency_map_1, overlay, seg_preds_interp.numpy() * 255, label,file_path)
 
-            if is_vae or is_ae:
+            if is_ae:
                 x_reconst = x_reconst.detach()
                 save_dir = 'reconst/{}/{}'.format(ex.current_run.config['model']['arch'],
                                                ex.current_run.config['model']['pooling'])
@@ -400,7 +364,6 @@ def main(epochs, seed):
     best_valid_acc = 0
     best_valid_loss = float('inf')
     best_model_dict = deepcopy(model.module.state_dict())
-    is_vae = isinstance(model.module.backbone, ResNet_VAE)
     is_ae = isinstance(model.module.backbone, ResNet_AE)
 
     for epoch in range(epochs):
@@ -415,12 +378,7 @@ def main(epochs, seed):
         for i, (images, labels) in enumerate(pbar):
             images, labels = images.to(device), labels.to(device, non_blocking=True)
 
-            if is_vae:
-                z, x_reconst, mu, logvar = model.module.backbone(images)
-                logits = model.module.pooling(z)
-                predictions = model.module.pooling.predictions(logits=logits)
-                loss = vae_loss(images, x_reconst, mu, logvar, logits, labels)
-            elif is_ae:
+            if is_ae:
                 z, x_reconst = model.module.backbone(images)
                 logits = model.module.pooling(z)
                 predictions = model.module.pooling.predictions(logits=logits)
@@ -481,9 +439,9 @@ def main(epochs, seed):
     ex.log_scalar('test.acc', test_metrics['accuracy'], epochs)
 
     # save model
-    # save_name = get_save_name() + '.pickle'
-    # torch.save(state_dict_to_cpu(best_model_dict), save_name)
-    # ex.add_artifact(os.path.abspath(save_name))
+    save_name = get_save_name() + '.pickle'
+    torch.save(state_dict_to_cpu(best_model_dict), save_name)
+    ex.add_artifact(os.path.abspath(save_name))
 
     # save test metrics
     if len(ex.current_run.observers) > 0:
